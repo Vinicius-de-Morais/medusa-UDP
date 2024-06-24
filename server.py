@@ -1,6 +1,6 @@
 import socket
 import threading
-from protocol import Protocol, Package
+from protocol import BUFFER_SIZE, Protocol, Package
 
 def handle_client(socket, client_addr, request_packet, protocols):
     with protocols_lock:
@@ -20,8 +20,8 @@ def main():
     protocols = {}
 
     while True:
-        request_packet, client_addr = server_socket.recvfrom(1024)
+        request_packet, client_addr = server_socket.recvfrom(BUFFER_SIZE*2)
         threading.Thread(target=handle_client, args=(server_socket, client_addr, request_packet, protocols)).start()
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     main()
