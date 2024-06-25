@@ -71,19 +71,6 @@ class Package:
     def __repr__(self):
         return f"Package(address={self.address}, package_type={self.package_type}, sequence={self.sequence}, data={self.data})"
 
-    # def __getattribute__(self, name: str):
-    #     """Override the default attribute access behavior."""
-    #     if name == 'address':
-    #         return self.address
-    #     elif name == 'package_type':
-    #         return self.package_type
-    #     elif name == 'sequence':
-    #         return self.sequence
-    #     elif name == 'data':
-    #         return self.data
-    #     else:
-    #         return super().__getattribute__(name)
-
 class Protocol:
     def __init__(self):
         self.packages = []
@@ -93,8 +80,7 @@ class Protocol:
         self.resolved = False
         self.filename = None
 
-    def handle_request(self, socket, client_addr, request_packet):
-        #request_packet = Package.from_bytes(request_packet, client_addr)
+    def handle_request(self, socket, client_addr, request_packet, from_client = False):
 
         print(f"Received \n\r {request_packet}\n\r from {client_addr}\n\r")
 
@@ -105,15 +91,26 @@ class Protocol:
         elif request_packet.package_type == 'PKG':
             self.handle_pkg(request_packet, socket, client_addr)
         elif request_packet.package_type == 'END':
-            self.handle_end(socket, client_addr)
+            self.handle_end(socket, client_addr, f"{client_addr[0]}_file/")
+            if from_client:
+                return True
+
         elif request_packet.package_type == 'LS':
             Protocol.handle_ls(socket, client_addr)
-        else:
-            self.send_nak(socket, client_addr)
+        elif request_packet.package_type == 'REC':
+            self.send_file_to_Client(socket, client_addr, request_packet)
+        elif request_packet.package_type == 'ACK':
+            sequence = self.hadle_send_response(request_packet.encode(), client_addr)
+            if sequence != -1:
+                self.send_file(socket, client_addr, request_packet.sequence)
+        
+        # else:
+        #     self.send_nak(socket, client_addr)
 
     def handle_syn(self, socket, client_addr, request_packet):
         self.filename = request_packet.data
         self.current_sequence += 1
+        self.packages.clear()
         self.send_ack(socket, client_addr)
 
     def send_ack(self, socket, client_addr):
@@ -134,23 +131,21 @@ class Protocol:
         socket.sendto(response_packet, client_addr)
 
     def handle_pkg(self, request_packet, socket, client_addr):
-        if request_packet.sequence == self.current_sequence:
+        #if request_packet.sequence == self.current_sequence:
             self.add_package(request_packet)
             if self.current_sequence % 3 == 0:
                 self.send_ack(socket, client_addr)
-        else:
-            self.send_nak(socket, client_addr)
+        #else:
+        #    self.send_nak(socket, client_addr)
 
     def add_package(self, package):
         self.packages.append(package)
         self.current_sequence += 1
 
-    def handle_end(self, socket, client_addr: tuple):
+    def handle_end(self, socket, client_addr: tuple, path):
         self.resolved = True
         self.packages.sort(key=lambda p: p.sequence)
 
-
-        path = f"{client_addr[0]}_file/"
         Path(path).mkdir(parents=True, exist_ok=True)
         with open(path+self.filename.decode(), 'ab') as file:
             for package in self.packages:
@@ -164,12 +159,18 @@ class Protocol:
         response = Package(client_addr, PACKAGE_TYPE_LS, 0, json.dumps(files).encode())
         socket.sendto(response.encode(), client_addr)
 
+    def send_file_to_Client(self, socket, client_addr, request_packet):
+        file_name = request_packet.data.decode('ISO-8859-15')
+
+        file_path = f"{client_addr[0]}_file/{file_name}"
+        self.handle_send_file(socket, client_addr, file_path)
+
     ##
     ## coisas para enviar arquivo
     ##
 
 
-    def send_file(self, socket, client_addr):
+    def send_file_client(self, socket, client_addr):
         sequence = 0
         self.packages.sort(key=lambda p: p.sequence)
 
@@ -193,6 +194,25 @@ class Protocol:
             if sequence == -1:
                 break
     
+    # metodo para o servidor
+    def send_file(self, socket, client_addr, sequence = 0):
+        self.packages.sort(key=lambda p: p.sequence)
+
+        while True:
+            if len(self.packages) > sequence:
+                for _ in range(3):
+                    package: Package = self.packages[sequence]
+                    sequence += 1
+                    try:
+                        package_bytes = package.encode()
+                        socket.sendto(package_bytes, client_addr)
+                        time.sleep(0.01)
+
+                        if len(self.packages) == sequence:
+                            break
+                    except socket.timeout:
+                        pass
+
     @classmethod
     def hadle_send_response(self, response_bytes, client_addr):
         #response = Package.from_bytes(response_bytes, client_addr)
@@ -207,7 +227,8 @@ class Protocol:
         else:
             return -1
 
-    def handle_send_file(socket, addr, filepath):
+    @staticmethod
+    def handle_send_file_client(socket, addr, filepath):
         # EM MEDIA OS OUTROS ELEMENTOS OCUPAM 75 BYTES SEM OS DADOS, ENTAO SUBTRAINDO 75 DO BUFFER_SIZE
         # {"address": ["127.0.0.1", 6969], "package_type": "PKG", "sequence": 1, ...
         buffer = BUFFER_SIZE //5 # - 75
@@ -218,10 +239,25 @@ class Protocol:
         print(f"Tamanho do arquivo {filesize}")
         print(f"serão enviados {packet_count} pacotes")
 
-        protocol = Protocol.fill_packages(filepath, buffer, addr)
+        protocol = Protocol.fill_packages_client(filepath, buffer, addr)
 
         if Protocol.send_syn(socket, addr, filepath):
-            Protocol.send_package(socket, addr, protocol)
+            Protocol.send_package_client(socket, addr, protocol)
+
+    # metodo para servidor
+    def handle_send_file(self, socket, addr, filepath):
+        # EM MEDIA OS OUTROS ELEMENTOS OCUPAM 75 BYTES SEM OS DADOS, ENTAO SUBTRAINDO 75 DO BUFFER_SIZE
+        # {"address": ["127.0.0.1", 6969], "package_type": "PKG", "sequence": 1, ...
+        buffer = BUFFER_SIZE //5 # - 75
+
+        packet_count = Protocol.get_file_packet_count(filepath, buffer)
+        filesize = os.path.getsize(filepath)
+
+        print(f"Tamanho do arquivo {filesize}")
+        print(f"serão enviados {packet_count} pacotes")
+
+        self.fill_packages(filepath, buffer, addr)
+        self.send_package(socket, addr)
 
     def get_file_packet_count(filename, buffer_size):
         byte_size = os.stat(filename).st_size
@@ -237,41 +273,36 @@ class Protocol:
         return Package(addr, PACKAGE_TYPE_PKG, seq_number, data)
 
     # Preenche o protocolo com os pacotes do arquivo
-    def fill_packages(filename, buffer_size, addr):
-        # Initialize the protocol instance
+    def fill_packages_client(filename, buffer_size, addr):
         protocol = Protocol()
-        
-        # Open the file in binary read mode
+
         with open(filename, 'rb') as file:
+            data = file.read(buffer_size)
             seq_number = 0
-            
-            while True:
-                # Read a chunk of data from the file with the given buffer size
-                data = file.read(buffer_size)
-                
-                # If no more data, break out of the loop
-                if not data:
-                    break
-                
-                # Increment the sequence number for each data chunk
+
+            while data:
                 seq_number += 1
-                
-                # Create a package with the current data chunk and sequence number
-                pkg = Protocol.data_to_pkg(addr, data, seq_number)
-                
-                # Add the package to the protocol
-                protocol.add_package(pkg)
-        
-        # Add an end package to indicate the end of data
-        end_package = Package(addr, PACKAGE_TYPE_END, seq_number + 1, None)
-        protocol.add_package(end_package)
-        
-        # Return the filled protocol instance
+                protocol.add_package(Protocol.data_to_pkg(addr, data, seq_number))
+                data = file.read(buffer_size)
+
+        protocol.add_package(Package(addr, PACKAGE_TYPE_END, seq_number+1, None))
         return protocol
 
+    # metodo para o servidor
+    def fill_packages(self, filename, buffer_size, addr):
+        with open(filename, 'rb') as file:
+            data = file.read(buffer_size)
+            seq_number = 0
+
+            while data:
+                seq_number += 1
+                self.add_package(Protocol.data_to_pkg(addr, data, seq_number))
+                data = file.read(buffer_size)
+
+        self.add_package(Package(addr, PACKAGE_TYPE_END, seq_number+1, None))
 
     def send_syn(socket, client_addr, path) -> bool:
-
+        
         filename = path.split("/")[-1]
         syn = Package(client_addr, PACKAGE_TYPE_SYN, 0, filename.encode())
         socket.sendto(syn.encode(), client_addr)
@@ -285,8 +316,11 @@ class Protocol:
             print(f"\nNAK received from {client_addr}\n")
             return False
 
-    def send_package(socket, client_addr, protocol):
-        protocol.send_file(socket, client_addr)
+    def send_package_client(socket, client_addr, protocol):
+        protocol.send_file_client(socket, client_addr)
+
+    def send_package(self, socket, client_addr):
+        self.send_file(socket, client_addr)
 
 
 # Define package types as constants
@@ -296,5 +330,6 @@ PACKAGE_TYPE_NAK = 'NAK'
 PACKAGE_TYPE_PKG = 'PKG'
 PACKAGE_TYPE_END = 'END'
 PACKAGE_TYPE_LS = 'LS'
+PACKAGE_TYPE_REC = 'REC'
 
 BUFFER_SIZE = 1024
