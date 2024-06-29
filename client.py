@@ -18,9 +18,9 @@ def main():
     server_socket = threading.Lock()
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    server_socket.bind(('127.0.0.1', 9696))
+    server_socket.bind(('0.0.0.0', 9696))
 
-    print(f"Server listening on {server_socket.getsockname()}")
+    print(f"Client listening on {server_socket.getsockname()}")
     
     while True:
         print("Digite a ação que deseja fazer:")

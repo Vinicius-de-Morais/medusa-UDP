@@ -14,7 +14,7 @@ def handle_client(socket, client_addr, request_packet, protocols):
 
 def main():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    server_socket.bind(('127.0.0.1', 6969))
+    server_socket.bind(('0.0.0.0', 6969))
     print(f"Server listening on {server_socket.getsockname()}")
 
     global protocols_lock
